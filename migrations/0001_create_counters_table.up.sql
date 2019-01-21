@@ -1,0 +1,1 @@
+CREATE TABLE counters (name CHAR(1), counter INT);

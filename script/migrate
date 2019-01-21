@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+docker run --mount type=bind,source="$(pwd)/migrations",target=/migrations --network db-isolations_default migrate/migrate -path=/migrations/ -database "mysql://root:root@tcp(mysql:3306)/anomaly_test" up
