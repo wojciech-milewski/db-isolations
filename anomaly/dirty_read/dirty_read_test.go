@@ -1,4 +1,4 @@
-package anomaly
+package dirty_read
 
 import (
 	"database/sql"
