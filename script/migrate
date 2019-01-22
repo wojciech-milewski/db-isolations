@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
 
 docker run --mount type=bind,source="$(pwd)/migrations",target=/migrations --network db-isolations_default migrate/migrate -path=/migrations/ -database "mysql://root:root@tcp(mysql:3306)/anomaly_test" up
+docker run --mount type=bind,source="$(pwd)/migrations",target=/migrations --network db-isolations_default migrate/migrate -path=/migrations/ -database "postgres://root:root@postgres:5432/anomaly_test?sslmode=disable" up

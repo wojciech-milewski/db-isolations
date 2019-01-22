@@ -3,17 +3,30 @@ package anomaly
 import (
 	"database/sql"
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"strconv"
 	"testing"
 )
 
 const (
-	mysqlDSN = "root:root@tcp(localhost:3306)/anomaly_test?multiStatements=true"
+	mysqlDSN    = "root:root@tcp(localhost:3306)/anomaly_test?multiStatements=true"
+	postgresDSN = "postgres://root:root@localhost:5432/anomaly_test?sslmode=disable"
+
+	mysqlDriverName    = "mysql"
+	postgresDriverName = "postgres"
 )
 
-func TestShouldFindDirtyRead(t *testing.T) {
-	db, err := sql.Open("mysql", mysqlDSN)
+func TestShouldFindDirtyReadOnMySQL(t *testing.T) {
+	testShouldFindDirtyRead(t, OpenMysql)
+}
+
+func TestShouldFindDirtyReadOnPostgres(t *testing.T) {
+	testShouldFindDirtyRead(t, OpenPostgres)
+}
+
+func testShouldFindDirtyRead(t *testing.T, sqlOpenFunc func() (*sql.DB, error)) {
+	db, err := sqlOpenFunc()
 	if err != nil {
 		t.Fatalf("Failed to open db: %v", err)
 	}
@@ -34,39 +47,44 @@ func TestShouldFindDirtyRead(t *testing.T) {
 			writeDone := make(chan bool, 1)
 			readDone := make(chan bool, 1)
 
-			go updateAndSignal(db, t, writeDone)
-			go readAndSignal(db, t, readDone)
+			go runAsync(func() { incrementAndRollback(db) }, writeDone)
+
+			go runAsync(func() { readAndAssert(db, t) }, readDone)
 
 			<-writeDone
 			<-readDone
 		})
 	}
-
 }
 
-func updateAndRollback(db *sql.DB) error {
+func OpenMysql() (*sql.DB, error) {
+	return sql.Open(mysqlDriverName, mysqlDSN)
+}
+
+func OpenPostgres() (*sql.DB, error) {
+	return sql.Open(postgresDriverName, postgresDSN)
+}
+
+func incrementAndRollback(db *sql.DB) {
 	_, err := db.Exec(`
 		BEGIN;
 		UPDATE counters SET counter = counter + 1 WHERE name='x';
 		ROLLBACK;
 		`)
 
-	return err
-}
-
-func updateAndSignal(db *sql.DB, t *testing.T, done chan bool) {
-	err := updateAndRollback(db)
 	if err != nil {
-		t.Fatalf("Failed to update counter and rollback: %v", err)
+		panic(err)
 	}
-	done <- true
 }
 
-func readAndSignal(db *sql.DB, t *testing.T, done chan bool) {
+func readAndAssert(db *sql.DB, t *testing.T) {
 	actualCounter, err := read(db)
-
 	assert.NoError(t, err)
 	assert.Equal(t, 10, actualCounter)
+}
+
+func runAsync(f func(), done chan bool) {
+	f()
 	done <- true
 }
 
