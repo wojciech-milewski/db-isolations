@@ -1,0 +1,1 @@
+ALTER TABLE counters MODIFY name VARCHAR(30);
