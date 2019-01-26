@@ -49,6 +49,8 @@ func TestShouldFindLostUpdatesOnPostgres(t *testing.T) {
 
 			<-firstIncrementDone
 			<-secondIncrementDone
+
+			assertIncrementedByTwo(t, db)
 		})
 	}
 }
@@ -78,20 +80,6 @@ func incrementCounterByOne(db *sql.DB) {
 	}
 }
 
-func setValues(db *sql.DB, value int) {
-	_, err := db.Exec(fmt.Sprintf(`
-			SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
-			BEGIN;
-			UPDATE counters SET counter=%d WHERE name='first'; 
-			UPDATE counters SET counter=%d WHERE name='second'; 
-			COMMIT;
-			`, value, value))
-
-	if err != nil {
-		panic(err)
-	}
-}
-
 func assertConsistentCounters(t *testing.T, db *sql.DB) {
 	firstCounter, secondCounter := readCounters(db)
 
@@ -100,6 +88,12 @@ func assertConsistentCounters(t *testing.T, db *sql.DB) {
 		firstCounter == secondCounter,
 		fmt.Sprintf("Counters not equal. First: %d, Second: %d", firstCounter, secondCounter),
 	)
+}
+
+func assertIncrementedByTwo(t *testing.T, db *sql.DB) {
+	counter := readCounter(db)
+
+	assert.Equal(t, 2, counter)
 }
 
 //noinspection SqlNoDataSourceInspection,SqlResolve
@@ -133,7 +127,20 @@ func readCounters(db *sql.DB) (int, int) {
 	return firstCounter, secondCounter
 }
 
-//noinspection SqlNoDataSourceInspection,SqlResolve
+//noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
+func readCounter(db *sql.DB) int {
+	var counter int
+
+	err := db.QueryRow(`
+			SELECT counter FROM counters WHERE name='first';
+`).Scan(&counter)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return counter
+}
 
 func scanCounter(rows *sql.Rows) int {
 	if !rows.Next() {
