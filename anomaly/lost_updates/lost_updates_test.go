@@ -53,6 +53,45 @@ func TestShouldFindLostUpdatesOnPostgres(t *testing.T) {
 	}
 }
 
+func TestShouldPreventLostUpdatesOnPostgresWithAtomicUpdate(t *testing.T) {
+	db, err := OpenPostgres()
+	if err != nil {
+		t.Fatalf("Failed to open db: %v", err)
+	}
+	defer func() {
+		closeErr := db.Close()
+		if closeErr != nil {
+			panic(closeErr)
+		}
+	}()
+
+	_, err = db.Exec("TRUNCATE counters")
+	if err != nil {
+		t.Fatalf("Failed to truncate: %v", err)
+	}
+
+	for i := 1; i <= 1000; i++ {
+		_, err = db.Exec(ResetCountersQueryPostgres)
+		if err != nil {
+			t.Fatalf("Failed to insert counter: %v", err)
+		}
+
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			firstIncrementDone := make(chan bool, 1)
+			secondIncrementDone := make(chan bool, 1)
+
+			go runAsync(func() { incrementCounterByOneWithAtomicUpdate(db) }, firstIncrementDone)
+
+			go runAsync(func() { incrementCounterByOneWithAtomicUpdate(db) }, secondIncrementDone)
+
+			<-firstIncrementDone
+			<-secondIncrementDone
+
+			assertIncrementedByTwo(t, db)
+		})
+	}
+}
+
 func TestShouldPreventLostUpdatesOnPostgresWithSelectForUpdate(t *testing.T) {
 	db, err := OpenPostgres()
 	if err != nil {
@@ -146,6 +185,24 @@ func incrementCounterByOne(db *sql.DB) {
 	counter = counter + 1
 
 	_, err = transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first';", counter)
+	if err != nil {
+		panic(err)
+	}
+
+	err = transaction.Commit()
+	if err != nil {
+		panic(err)
+	}
+}
+
+//noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
+func incrementCounterByOneWithAtomicUpdate(db *sql.DB) {
+	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		panic(err)
+	}
+
+	_, err = transaction.Exec("UPDATE counters SET counter = counter + 1 WHERE name='first';")
 	if err != nil {
 		panic(err)
 	}
