@@ -1,4 +1,4 @@
-package dirty_write
+package lost_updates
 
 import (
 	"context"
@@ -171,7 +171,10 @@ func TestShouldPreventLostUpdatesOnPostgresWithCompareAndSet(t *testing.T) {
 }
 
 func incrementCounterByOne(db *sql.DB) {
-	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	transaction, err := db.BeginTx(
+		context.Background(),
+		&sql.TxOptions{Isolation: sql.LevelReadCommitted},
+	)
 	if err != nil {
 		panic(err)
 	}
