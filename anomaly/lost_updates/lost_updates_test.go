@@ -92,6 +92,45 @@ func TestShouldPreventLostUpdatesOnPostgresWithSelectForUpdate(t *testing.T) {
 	}
 }
 
+func TestShouldPreventLostUpdatesOnPostgresWithCompareAndSet(t *testing.T) {
+	db, err := OpenPostgres()
+	if err != nil {
+		t.Fatalf("Failed to open db: %v", err)
+	}
+	defer func() {
+		closeErr := db.Close()
+		if closeErr != nil {
+			panic(closeErr)
+		}
+	}()
+
+	_, err = db.Exec("TRUNCATE counters")
+	if err != nil {
+		t.Fatalf("Failed to truncate: %v", err)
+	}
+
+	for i := 1; i <= 1000; i++ {
+		_, err = db.Exec(ResetCountersQueryPostgres)
+		if err != nil {
+			t.Fatalf("Failed to insert counter: %v", err)
+		}
+
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			firstIncrementDone := make(chan bool, 1)
+			secondIncrementDone := make(chan bool, 1)
+
+			go runAsync(func() { incrementCounterByOneWithCompareAndSet(db) }, firstIncrementDone)
+
+			go runAsync(func() { incrementCounterByOneWithCompareAndSet(db) }, secondIncrementDone)
+
+			<-firstIncrementDone
+			<-secondIncrementDone
+
+			assertIncrementedByTwo(t, db)
+		})
+	}
+}
+
 func incrementCounterByOne(db *sql.DB) {
 	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
@@ -139,6 +178,44 @@ func incrementCounterByOneWithSelectForUpdate(db *sql.DB) {
 	err = transaction.Commit()
 	if err != nil {
 		panic(err)
+	}
+}
+
+//noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
+func incrementCounterByOneWithCompareAndSet(db *sql.DB) {
+	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		panic(err)
+	}
+	var counter int
+	err = transaction.QueryRow("SELECT counter FROM counters WHERE name='first';").Scan(&counter)
+
+	if err != nil {
+		panic(err)
+	}
+
+	newCounter := counter + 1
+
+	updateResult, err := transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first' AND counter=$2;", newCounter, counter)
+	if err != nil {
+		panic(err)
+	}
+	rowsAffected, err := updateResult.RowsAffected()
+	if err != nil {
+		panic(err)
+	}
+
+	if rowsAffected == 0 {
+		err := transaction.Rollback()
+		if err != nil {
+			panic(err)
+		}
+		incrementCounterByOneWithCompareAndSet(db)
+	} else {
+		err = transaction.Commit()
+		if err != nil {
+			panic(err)
+		}
 	}
 }
 
