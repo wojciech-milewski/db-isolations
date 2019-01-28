@@ -1,8 +1,9 @@
 package write_skew
 
 import (
-	"context"
 	"database/sql"
+	"db-isolations/postgres"
+	"db-isolations/util"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -10,27 +11,14 @@ import (
 	"testing"
 )
 
-const (
-	ResetCountersQueryPostgres = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0) ON CONFLICT (name) DO UPDATE SET counter=0;"
-)
-
 func TestShouldBeNoWriteSkewOnInsert(t *testing.T) {
-	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+	db, err := postgres.Open()
+	util.PanicIfNotNil(err)
+
+	defer util.CloseOrPanic(db)
 
 	for i := 1; i <= 1000; i++ {
-		_, err = db.Exec("TRUNCATE counters")
-		if err != nil {
-			t.Fatalf("Failed to truncate: %v", err)
-		}
+		util.TruncateCounters(db)
 
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			firstInsertDone := make(chan bool, 1)
@@ -49,32 +37,15 @@ func TestShouldBeNoWriteSkewOnInsert(t *testing.T) {
 }
 
 func TestShouldBeNoWriteSkewOnInsert_WithMaterializingConflicts(t *testing.T) {
-	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+	db, err := postgres.Open()
+	util.PanicIfNotNil(err)
+	defer util.CloseOrPanic(db)
 
-	_, err = db.Exec("TRUNCATE materialized_locks")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
-
-	_, err = db.Exec("INSERT INTO materialized_locks (name) VALUES ('counters')")
-	if err != nil {
-		t.Fatalf("Failed to insert materialized lock: %v", err)
-	}
+	err = addMaterializedLock(db)
+	util.PanicIfNotNil(err)
 
 	for i := 1; i <= 1000; i++ {
-		_, err = db.Exec("TRUNCATE counters")
-		if err != nil {
-			t.Fatalf("Failed to truncate: %v", err)
-		}
+		util.TruncateCounters(db)
 
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			firstInsertDone := make(chan bool, 1)
@@ -92,72 +63,47 @@ func TestShouldBeNoWriteSkewOnInsert_WithMaterializingConflicts(t *testing.T) {
 	}
 }
 
-//noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
-func insertCounterIfNoCounters(db *sql.DB, counterName string) {
-	transaction, err := db.BeginTx(
-		context.Background(),
-		&sql.TxOptions{Isolation: sql.LevelRepeatableRead},
-	)
-	if err != nil {
-		panic(err)
-	}
-
-	var numberOfCounters int
-	err = transaction.QueryRow("SELECT count(name) FROM counters;").Scan(&numberOfCounters)
-
-	if err != nil {
-		panic(err)
-	}
-
-	if numberOfCounters == 0 {
-		_, err := transaction.Exec("INSERT INTO counters (name, counter) VALUES ($1, 0);", counterName)
-		if err != nil {
-			panic(err)
-		}
-	}
-
-	err = transaction.Commit()
-	if err != nil {
-		panic(err)
-	}
+func addMaterializedLock(db *sql.DB) error {
+	_, err := db.Exec("INSERT INTO materialized_locks (name) VALUES ('counters') ON CONFLICT(name) DO NOTHING")
+	return err
 }
 
-//noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
-func insertCounterIfNoCountersWithMaterializedLock(db *sql.DB, counterName string) {
-	transaction, err := db.BeginTx(
-		context.Background(),
-		&sql.TxOptions{Isolation: sql.LevelReadCommitted},
-	)
-	if err != nil {
-		panic(err)
+func insertCounterIfNoCounters(db *sql.DB, counterName string) {
+	transaction := util.BeginTx(db, sql.LevelReadCommitted)
+
+	numberOfCounters := util.ScanToInt(transaction.QueryRow("SELECT count(name) FROM counters;"))
+
+	if numberOfCounters == 0 {
+		insertSQL := "INSERT INTO counters (name, counter) VALUES ($1, 0);"
+		_, err := transaction.Exec(insertSQL, counterName)
+		util.PanicIfNotNil(err)
 	}
 
-	result, err := transaction.Query("SELECT * FROM materialized_locks WHERE name='counters' FOR UPDATE")
-	if err != nil {
-		panic(err)
-	}
+	err := transaction.Commit()
+	util.PanicIfNotNil(err)
+}
+
+func insertCounterIfNoCountersWithMaterializedLock(db *sql.DB, counterName string) {
+	transaction := util.BeginTx(db, sql.LevelReadCommitted)
+
+	lockSQL := "SELECT * FROM materialized_locks WHERE name='counters' FOR UPDATE"
+	result, err := transaction.Query(lockSQL)
+	util.PanicIfNotNil(err)
 
 	for result.Next() {
 	}
 
-	var numberOfCounters int
-	err = transaction.QueryRow("SELECT count(name) FROM counters;").Scan(&numberOfCounters)
-
-	if err != nil {
-		panic(err)
-	}
+	selectCountSQL := "SELECT count(name) FROM counters;"
+	numberOfCounters := util.ScanToInt(transaction.QueryRow(selectCountSQL))
 
 	if numberOfCounters == 0 {
-		_, err := transaction.Exec("INSERT INTO counters (name, counter) VALUES ($1, 0);", counterName)
-		if err != nil {
-			panic(err)
-		}
+		insertSQL := "INSERT INTO counters (name, counter) VALUES ($1, 0);"
+		_, err := transaction.Exec(insertSQL, counterName)
+		util.PanicIfNotNil(err)
 	}
 
 	err = transaction.Commit()
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 }
 
 func assertOneCounter(t *testing.T, db *sql.DB) {
@@ -166,31 +112,13 @@ func assertOneCounter(t *testing.T, db *sql.DB) {
 	assert.Equal(t, 1, numberOfCounters)
 }
 
-//noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
 func readNumberOfCounters(db *sql.DB) int {
-	var numberOfCounters int
-
-	err := db.QueryRow(`
-			SELECT count(name) FROM counters;
-`).Scan(&numberOfCounters)
-
-	if err != nil {
-		panic(err)
-	}
-
-	return numberOfCounters
+	selectSQL := `SELECT count(name) FROM counters;`
+	row := db.QueryRow(selectSQL)
+	return util.ScanToInt(row)
 }
 
-const (
-	postgresDSN        = "postgres://root:root@localhost:5432/anomaly_test?sslmode=disable"
-	postgresDriverName = "postgres"
-)
-
-func OpenPostgres() (*sql.DB, error) {
-	return sql.Open(postgresDriverName, postgresDSN)
-}
-
-func runAsync(f func(), done chan bool) {
+func runAsync(f func(), done chan<- bool) {
 	f()
 	done <- true
 }
