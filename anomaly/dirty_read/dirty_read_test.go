@@ -4,61 +4,68 @@ import (
 	"database/sql"
 	"db-isolations/postgres"
 	"db-isolations/util"
+	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
-	"strconv"
 	"testing"
 )
 
 const (
-	mysqlDSN    = "root:root@tcp(localhost:3306)/anomaly_test?multiStatements=true"
-	postgresDSN = "postgres://root:root@localhost:5432/anomaly_test?sslmode=disable"
+	mysqlDSN = "root:root@tcp(localhost:3306)/anomaly_test?multiStatements=true"
 
-	mysqlDriverName    = "mysql"
-	postgresDriverName = "postgres"
+	mysqlDriverName = "mysql"
 )
 
-func TestShouldFindDirtyReadOnMySQL(t *testing.T) {
-	testShouldFindDirtyRead(t, OpenMysql)
-}
+const (
+	ReadUncommited = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"
+	ReadCommited   = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+	RepeatableRead = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+	Serializable   = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+)
 
-func TestShouldFindDirtyReadOnPostgres(t *testing.T) {
-	testShouldFindDirtyRead(t, postgres.Open)
-}
-
-func testShouldFindDirtyRead(t *testing.T, sqlOpenFunc func() (*sql.DB, error)) {
-	db, err := sqlOpenFunc()
+func TestDirtyReadOnMysql(t *testing.T) {
+	db, err := OpenMysql()
 	util.PanicIfNotNil(err)
 
 	defer util.CloseOrPanic(db)
 
-	util.TruncateCounters(db)
+	t.Run("Should FAIL on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommited))
+	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommited))
+	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, RepeatableRead))
+	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, Serializable))
+}
 
-	_, err = db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 10);")
+func TestDirtyReadOnPostgres(t *testing.T) {
+	db, err := postgres.Open()
 	util.PanicIfNotNil(err)
 
-	for i := 1; i <= 1000; i++ {
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			writeDone := make(chan bool, 1)
-			readDone := make(chan bool, 1)
+	defer util.CloseOrPanic(db)
 
-			go runAsync(func() { incrementAndRollback(db) }, writeDone)
-
-			go runAsync(func() { readAndAssert(db, t) }, readDone)
-
-			<-writeDone
-			<-readDone
-		})
-	}
+	t.Run("Should PASS on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommited))
+	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommited))
+	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, RepeatableRead))
+	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, Serializable))
 }
 
-func OpenMysql() (*sql.DB, error) {
-	return sql.Open(mysqlDriverName, mysqlDSN)
-}
+func testDirtyReadWithIsolationLevel(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
+	return util.RepeatTest(func(t *testing.T) {
 
-func OpenPostgres() (*sql.DB, error) {
-	return sql.Open(postgresDriverName, postgresDSN)
+		util.TruncateCounters(db)
+
+		_, err := db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 10);")
+		util.PanicIfNotNil(err)
+
+		writeDone := make(chan bool, 1)
+		readDone := make(chan bool, 1)
+
+		go runAsync(func() { incrementAndRollback(db) }, writeDone)
+
+		go runAsync(func() { readAndAssert(db, t, setIsolationLevelStatement) }, readDone)
+
+		<-writeDone
+		<-readDone
+	})
 }
 
 func incrementAndRollback(db *sql.DB) {
@@ -73,9 +80,17 @@ func incrementAndRollback(db *sql.DB) {
 	}
 }
 
-func readAndAssert(db *sql.DB, t *testing.T) {
-	actualCounter, err := read(db)
-	assert.NoError(t, err)
+func readAndAssert(db *sql.DB, t *testing.T, setIsolationLevelStatement string) {
+	selectSQL := fmt.Sprintf(`
+	%s;
+	BEGIN;
+	SELECT counter FROM counters WHERE name='first';
+	COMMIT;
+`, setIsolationLevelStatement)
+
+	row := db.QueryRow(selectSQL)
+	actualCounter := util.ScanToInt(row)
+
 	assert.Equal(t, 10, actualCounter)
 }
 
@@ -84,16 +99,6 @@ func runAsync(f func(), done chan bool) {
 	done <- true
 }
 
-func read(db *sql.DB) (int, error) {
-	row := db.QueryRow(`
-	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
-	BEGIN;
-	SELECT counter FROM counters WHERE name='first';
-	COMMIT;
-`)
-
-	var counter int
-	err := row.Scan(&counter)
-
-	return counter, err
+func OpenMysql() (*sql.DB, error) {
+	return sql.Open(mysqlDriverName, mysqlDSN)
 }
