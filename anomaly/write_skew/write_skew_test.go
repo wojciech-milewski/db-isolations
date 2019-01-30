@@ -16,16 +16,18 @@ func TestWriteSkew(t *testing.T) {
 
 	defer util.CloseOrPanic(db)
 
-	t.Run("Should FAIL on read committed", testWriteSkewWithoutLocks(db, sql.LevelReadCommitted))
+	t.Run("Should FAIL on read committed", testWriteSkewWithNaiveQuery(db, sql.LevelReadCommitted))
 	t.Run("Should PASS on read committed with locking", testWriteSkewWithLocks(db, sql.LevelReadCommitted))
-	t.Run("Should FAIL on repeatable read", testWriteSkewWithoutLocks(db, sql.LevelRepeatableRead))
+	t.Run("Should FAIL on repeatable read", testWriteSkewWithNaiveQuery(db, sql.LevelRepeatableRead))
 	t.Run("Should FAIL on repeatable read with locking", testWriteSkewWithLocks(db, sql.LevelRepeatableRead))
-	t.Run("Should dosth on serializable with locking", testWriteSkewWithLocks(db, sql.LevelSerializable))
+	t.Run("Should PANIC on repeatable read", testWriteSkewWithNaiveQuery(db, sql.LevelSerializable))
+	t.Run("Should PANIC on serializable with locking", testWriteSkewWithLocks(db, sql.LevelSerializable))
 }
 
-func testWriteSkewWithoutLocks(db *sql.DB, isolationLevel sql.IsolationLevel) func(t *testing.T) {
+func testWriteSkewWithNaiveQuery(db *sql.DB, isolationLevel sql.IsolationLevel) func(t *testing.T) {
 	return util.RepeatTest(func(t *testing.T) {
 		util.TruncateCounters(db)
+
 		firstInsertDone := make(chan bool, 1)
 		secondInsertDone := make(chan bool, 1)
 

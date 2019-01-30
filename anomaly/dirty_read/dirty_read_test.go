@@ -2,6 +2,8 @@ package dirty_read
 
 import (
 	"database/sql"
+	"db-isolations/postgres"
+	"db-isolations/util"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
@@ -22,25 +24,19 @@ func TestShouldFindDirtyReadOnMySQL(t *testing.T) {
 }
 
 func TestShouldFindDirtyReadOnPostgres(t *testing.T) {
-	testShouldFindDirtyRead(t, OpenPostgres)
+	testShouldFindDirtyRead(t, postgres.Open)
 }
 
 func testShouldFindDirtyRead(t *testing.T, sqlOpenFunc func() (*sql.DB, error)) {
 	db, err := sqlOpenFunc()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer db.Close()
+	util.PanicIfNotNil(err)
 
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
+	defer util.CloseOrPanic(db)
 
-	_, err = db.Exec("INSERT INTO counters (name, counter) VALUES ('x', 10);")
-	if err != nil {
-		t.Fatalf("Failed to insert counter: %v", err)
-	}
+	util.TruncateCounters(db)
+
+	_, err = db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 10);")
+	util.PanicIfNotNil(err)
 
 	for i := 1; i <= 1000; i++ {
 		t.Run(strconv.Itoa(i), func(t *testing.T) {
@@ -68,7 +64,7 @@ func OpenPostgres() (*sql.DB, error) {
 func incrementAndRollback(db *sql.DB) {
 	_, err := db.Exec(`
 		BEGIN;
-		UPDATE counters SET counter = counter + 1 WHERE name='x';
+		UPDATE counters SET counter = counter + 1 WHERE name='first';
 		ROLLBACK;
 		`)
 
@@ -92,7 +88,7 @@ func read(db *sql.DB) (int, error) {
 	row := db.QueryRow(`
 	SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
 	BEGIN;
-	SELECT counter FROM counters WHERE name='x';
+	SELECT counter FROM counters WHERE name='first';
 	COMMIT;
 `)
 
