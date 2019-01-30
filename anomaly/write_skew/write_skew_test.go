@@ -7,60 +7,58 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
-	"strconv"
 	"testing"
 )
 
-func TestShouldBeNoWriteSkewOnInsert(t *testing.T) {
+func TestWriteSkew(t *testing.T) {
 	db, err := postgres.Open()
 	util.PanicIfNotNil(err)
 
 	defer util.CloseOrPanic(db)
 
-	for i := 1; i <= 1000; i++ {
-		util.TruncateCounters(db)
-
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			firstInsertDone := make(chan bool, 1)
-			secondInsertDone := make(chan bool, 1)
-
-			go runAsync(func() { insertCounterIfNoCounters(db, "first") }, firstInsertDone)
-
-			go runAsync(func() { insertCounterIfNoCounters(db, "second") }, secondInsertDone)
-
-			<-firstInsertDone
-			<-secondInsertDone
-
-			assertOneCounter(t, db)
-		})
-	}
+	t.Run("Should FAIL on read committed", testWriteSkewWithoutLocks(db, sql.LevelReadCommitted))
+	t.Run("Should PASS on read committed with locking", testWriteSkewWithLocks(db, sql.LevelReadCommitted))
+	t.Run("Should FAIL on repeatable read", testWriteSkewWithoutLocks(db, sql.LevelRepeatableRead))
+	t.Run("Should FAIL on repeatable read with locking", testWriteSkewWithLocks(db, sql.LevelRepeatableRead))
+	t.Run("Should dosth on serializable with locking", testWriteSkewWithLocks(db, sql.LevelSerializable))
 }
 
-func TestShouldBeNoWriteSkewOnInsert_WithMaterializingConflicts(t *testing.T) {
-	db, err := postgres.Open()
-	util.PanicIfNotNil(err)
-	defer util.CloseOrPanic(db)
+func testWriteSkewWithoutLocks(db *sql.DB, isolationLevel sql.IsolationLevel) func(t *testing.T) {
+	return util.RepeatTest(func(t *testing.T) {
+		util.TruncateCounters(db)
+		firstInsertDone := make(chan bool, 1)
+		secondInsertDone := make(chan bool, 1)
 
-	err = addMaterializedLock(db)
-	util.PanicIfNotNil(err)
+		go runAsync(func() { insertCounterIfNoCounters(db, "first", isolationLevel) }, firstInsertDone)
 
-	for i := 1; i <= 1000; i++ {
+		go runAsync(func() { insertCounterIfNoCounters(db, "second", isolationLevel) }, secondInsertDone)
+
+		<-firstInsertDone
+		<-secondInsertDone
+
+		assertOneCounter(t, db)
+	})
+}
+
+func testWriteSkewWithLocks(db *sql.DB, isolationLevel sql.IsolationLevel) func(t *testing.T) {
+	return util.RepeatTest(func(t *testing.T) {
+		err := addMaterializedLock(db)
+		util.PanicIfNotNil(err)
+
 		util.TruncateCounters(db)
 
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			firstInsertDone := make(chan bool, 1)
-			secondInsertDone := make(chan bool, 1)
+		firstInsertDone := make(chan bool, 1)
+		secondInsertDone := make(chan bool, 1)
 
-			go runAsync(func() { insertCounterIfNoCountersWithMaterializedLock(db, "first") }, firstInsertDone)
+		go runAsync(func() { insertCounterIfNoCountersWithMaterializedLock(db, "first", isolationLevel) }, firstInsertDone)
 
-			go runAsync(func() { insertCounterIfNoCountersWithMaterializedLock(db, "second") }, secondInsertDone)
+		go runAsync(func() { insertCounterIfNoCountersWithMaterializedLock(db, "second", isolationLevel) }, secondInsertDone)
 
-			<-firstInsertDone
-			<-secondInsertDone
+		<-firstInsertDone
+		<-secondInsertDone
 
-			assertOneCounter(t, db)
-		})
-	}
+		assertOneCounter(t, db)
+	})
 }
 
 func addMaterializedLock(db *sql.DB) error {
@@ -68,8 +66,8 @@ func addMaterializedLock(db *sql.DB) error {
 	return err
 }
 
-func insertCounterIfNoCounters(db *sql.DB, counterName string) {
-	transaction := util.BeginTx(db, sql.LevelReadCommitted)
+func insertCounterIfNoCounters(db *sql.DB, counterName string, isolationLevel sql.IsolationLevel) {
+	transaction := util.BeginTx(db, isolationLevel)
 
 	numberOfCounters := util.ScanToInt(transaction.QueryRow("SELECT count(name) FROM counters;"))
 
@@ -83,8 +81,8 @@ func insertCounterIfNoCounters(db *sql.DB, counterName string) {
 	util.PanicIfNotNil(err)
 }
 
-func insertCounterIfNoCountersWithMaterializedLock(db *sql.DB, counterName string) {
-	transaction := util.BeginTx(db, sql.LevelReadCommitted)
+func insertCounterIfNoCountersWithMaterializedLock(db *sql.DB, counterName string, isolationLevel sql.IsolationLevel) {
+	transaction := util.BeginTx(db, isolationLevel)
 
 	lockSQL := "SELECT * FROM materialized_locks WHERE name='counters' FOR UPDATE"
 	result, err := transaction.Query(lockSQL)
