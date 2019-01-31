@@ -2,38 +2,25 @@ package dirty_read
 
 import (
 	"database/sql"
+	"db-isolations/mysql"
 	"db-isolations/postgres"
 	"db-isolations/util"
+	"db-isolations/util/db/statement"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
-const (
-	mysqlDSN = "root:root@tcp(localhost:3306)/anomaly_test?multiStatements=true"
-
-	mysqlDriverName = "mysql"
-)
-
-const (
-	ReadUncommitted = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"
-	ReadCommitted   = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
-	RepeatableRead  = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-	Serializable    = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
-)
-
 func TestDirtyReadOnMysql(t *testing.T) {
-	db, err := OpenMysql()
+	db, err := mysql.Open()
 	util.PanicIfNotNil(err)
 
 	defer util.CloseOrPanic(db)
 
-	t.Run("Should FAIL on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommitted))
-	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommitted))
-	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, RepeatableRead))
-	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, Serializable))
+	t.Run("Should FAIL on read uncommitted", testDirtyReadWithIsolationLevel(db, statement.ReadUncommitted))
+	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, statement.ReadCommitted))
+	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, statement.RepeatableRead))
+	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, statement.Serializable))
 }
 
 func TestDirtyReadOnPostgres(t *testing.T) {
@@ -42,10 +29,10 @@ func TestDirtyReadOnPostgres(t *testing.T) {
 
 	defer util.CloseOrPanic(db)
 
-	t.Run("Should PASS on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommitted))
-	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommitted))
-	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, RepeatableRead))
-	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, Serializable))
+	t.Run("Should PASS on read uncommitted", testDirtyReadWithIsolationLevel(db, statement.ReadUncommitted))
+	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, statement.ReadCommitted))
+	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, statement.RepeatableRead))
+	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, statement.Serializable))
 }
 
 func testDirtyReadWithIsolationLevel(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
@@ -101,8 +88,4 @@ func resetCounter(db *sql.DB) {
 func runAsync(f func(), done chan bool) {
 	f()
 	done <- true
-}
-
-func OpenMysql() (*sql.DB, error) {
-	return sql.Open(mysqlDriverName, mysqlDSN)
 }

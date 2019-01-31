@@ -2,113 +2,91 @@ package dirty_write
 
 import (
 	"database/sql"
+	"db-isolations/mysql"
+	"db-isolations/postgres"
+	"db-isolations/util"
+	"db-isolations/util/db/statement"
 	"fmt"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
-	"strconv"
 	"testing"
 )
 
 const (
-	ResetCountersQueryMysql    = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0) ON DUPLICATE KEY UPDATE counter=0;"
-	ResetCountersQueryPostgres = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0) ON CONFLICT (name) DO UPDATE SET counter=0;"
+	InsertCountersSQL = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0);"
 )
 
-func TestShouldFindDirtyWriteOnMySQL(t *testing.T) {
-	testShouldFindDirtyWrite(t, OpenMysql, ResetCountersQueryMysql)
+func TestDirtyWriteOnMysql(t *testing.T) {
+	db, err := mysql.Open()
+	util.PanicIfNotNil(err)
+
+	defer util.CloseOrPanic(db)
+
+	t.Run("Should PASS on read uncommitted", testDirtyWriteWithIsolationLevel(db, statement.ReadUncommitted))
+	t.Run("Should PASS on read committed", testDirtyWriteWithIsolationLevel(db, statement.ReadCommitted))
+	t.Run("Should PASS on repeatable read", testDirtyWriteWithIsolationLevel(db, statement.RepeatableRead))
+	t.Run("Should PASS on serializable", testDirtyWriteWithIsolationLevel(db, statement.Serializable))
 }
 
-func TestShouldFindDirtyWriteOnPostgres(t *testing.T) {
-	testShouldFindDirtyWrite(t, OpenPostgres, ResetCountersQueryPostgres)
+func TestDirtyWriteOnPostgres(t *testing.T) {
+	db, err := postgres.Open()
+	util.PanicIfNotNil(err)
+
+	defer util.CloseOrPanic(db)
+
+	t.Run("Should PASS on read uncommitted", testDirtyWriteWithIsolationLevel(db, statement.ReadUncommitted))
+	t.Run("Should PASS on read committed", testDirtyWriteWithIsolationLevel(db, statement.ReadCommitted))
+	t.Run("Should PANIC on repeatable read", testDirtyWriteWithIsolationLevel(db, statement.RepeatableRead))
+	t.Run("Should PANIC on serializable", testDirtyWriteWithIsolationLevel(db, statement.Serializable))
 }
 
-func testShouldFindDirtyWrite(t *testing.T, sqlOpenFunc func() (*sql.DB, error), resetQuery string) {
-	db, err := sqlOpenFunc()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+func testDirtyWriteWithIsolationLevel(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
+	return util.RepeatTest(func(t *testing.T) {
+		resetCounters(db)
 
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
+		firstWriteDone := make(chan bool, 1)
+		secondWriteDone := make(chan bool, 1)
 
-	for i := 1; i <= 1000; i++ {
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			_, err = db.Exec(resetQuery)
-			if err != nil {
-				t.Fatalf("Failed to insert counter: %v", err)
-			}
+		go runAsync(func() { setValues(db, 1, setIsolationLevelStatement) }, firstWriteDone)
 
-			firstWriteDone := make(chan bool, 1)
-			secondWriteDone := make(chan bool, 1)
+		go runAsync(func() { setValues(db, 2, setIsolationLevelStatement) }, secondWriteDone)
 
-			go runAsync(func() { setValues(db, 1) }, firstWriteDone)
+		<-firstWriteDone
+		<-secondWriteDone
 
-			go runAsync(func() { setValues(db, 2) }, secondWriteDone)
-
-			<-firstWriteDone
-			<-secondWriteDone
-
-			assertConsistentCounters(t, db)
-		})
-	}
+		assertConsistentCounters(t, db)
+	})
 }
 
-func setValues(db *sql.DB, value int) {
-	_, err := db.Exec(fmt.Sprintf(`
-			SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+func resetCounters(db *sql.DB) {
+	util.TruncateCounters(db)
+
+	_, err := db.Exec(InsertCountersSQL)
+	util.PanicIfNotNil(err)
+}
+
+func setValues(db *sql.DB, value int, setIsolationLevelStatement string) {
+	updateSQL := fmt.Sprintf(`
+			%s;
 			BEGIN;
 			UPDATE counters SET counter=%d; 
 			COMMIT;
-			`, value))
-
-	if err != nil {
-		panic(err)
-	}
+			`, setIsolationLevelStatement, value)
+	_, err := db.Exec(updateSQL)
+	util.PanicIfNotNil(err)
 }
 
 func assertConsistentCounters(t *testing.T, db *sql.DB) {
-	var firstCounter int
-	err := db.QueryRow(`SELECT counter FROM counters WHERE name='first';`).Scan(&firstCounter)
-	if err != nil {
-		panic(err)
-	}
+	row := db.QueryRow(`SELECT counter FROM counters WHERE name='first';`)
+	firstCounter := util.ScanToInt(row)
 
-	var secondCounter int
-	err = db.QueryRow(`SELECT counter FROM counters WHERE name='second';`).Scan(&secondCounter)
-	if err != nil {
-		panic(err)
-	}
+	row = db.QueryRow(`SELECT counter FROM counters WHERE name='second'`)
+	secondCounter := util.ScanToInt(row)
 
 	assert.True(
 		t,
 		firstCounter == secondCounter,
 		fmt.Sprintf("Counters not equal. First: %d, Second: %d", firstCounter, secondCounter),
 	)
-}
-
-const (
-	mysqlDSN    = "root:root@tcp(localhost:3306)/anomaly_test?multiStatements=true&interpolateParams=true"
-	postgresDSN = "postgres://root:root@localhost:5432/anomaly_test?sslmode=disable"
-
-	mysqlDriverName    = "mysql"
-	postgresDriverName = "postgres"
-)
-
-func OpenMysql() (*sql.DB, error) {
-	return sql.Open(mysqlDriverName, mysqlDSN)
-}
-
-func OpenPostgres() (*sql.DB, error) {
-	return sql.Open(postgresDriverName, postgresDSN)
 }
 
 func runAsync(f func(), done chan bool) {
