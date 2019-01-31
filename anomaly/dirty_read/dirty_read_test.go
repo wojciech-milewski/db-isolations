@@ -18,10 +18,10 @@ const (
 )
 
 const (
-	ReadUncommited = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"
-	ReadCommited   = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
-	RepeatableRead = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-	Serializable   = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+	ReadUncommitted = "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED"
+	ReadCommitted   = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+	RepeatableRead  = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+	Serializable    = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
 )
 
 func TestDirtyReadOnMysql(t *testing.T) {
@@ -30,8 +30,8 @@ func TestDirtyReadOnMysql(t *testing.T) {
 
 	defer util.CloseOrPanic(db)
 
-	t.Run("Should FAIL on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommited))
-	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommited))
+	t.Run("Should FAIL on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommitted))
+	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommitted))
 	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, RepeatableRead))
 	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, Serializable))
 }
@@ -42,8 +42,8 @@ func TestDirtyReadOnPostgres(t *testing.T) {
 
 	defer util.CloseOrPanic(db)
 
-	t.Run("Should PASS on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommited))
-	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommited))
+	t.Run("Should PASS on read uncommitted", testDirtyReadWithIsolationLevel(db, ReadUncommitted))
+	t.Run("Should PASS on read committed", testDirtyReadWithIsolationLevel(db, ReadCommitted))
 	t.Run("Should PASS on repeatable read", testDirtyReadWithIsolationLevel(db, RepeatableRead))
 	t.Run("Should PASS on serializable", testDirtyReadWithIsolationLevel(db, Serializable))
 }
@@ -51,10 +51,7 @@ func TestDirtyReadOnPostgres(t *testing.T) {
 func testDirtyReadWithIsolationLevel(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
 	return util.RepeatTest(func(t *testing.T) {
 
-		util.TruncateCounters(db)
-
-		_, err := db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 10);")
-		util.PanicIfNotNil(err)
+		resetCounter(db)
 
 		writeDone := make(chan bool, 1)
 		readDone := make(chan bool, 1)
@@ -91,7 +88,14 @@ func readAndAssert(db *sql.DB, t *testing.T, setIsolationLevelStatement string) 
 	row := db.QueryRow(selectSQL)
 	actualCounter := util.ScanToInt(row)
 
-	assert.Equal(t, 10, actualCounter)
+	assert.Equal(t, 0, actualCounter)
+}
+
+func resetCounter(db *sql.DB) {
+	util.TruncateCounters(db)
+
+	_, err := db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 0);")
+	util.PanicIfNotNil(err)
 }
 
 func runAsync(f func(), done chan bool) {
