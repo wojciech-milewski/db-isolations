@@ -2,12 +2,12 @@ package dirty_write
 
 import (
 	"database/sql"
+	"db-isolations/util"
 	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
-	"strconv"
 	"testing"
 )
 
@@ -19,75 +19,55 @@ const (
 
 func TestShouldFindReadSkewOnPostgres_MultiObject(t *testing.T) {
 	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+	util.PanicIfNotNil(err)
+	defer util.CloseOrPanic(db)
 
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
+	util.TruncateCounters(db)
 
-	for i := 1; i <= 5000; i++ {
-		_, err = db.Exec(ResetCountersQueryPostgres)
-		if err != nil {
-			t.Fatalf("Failed to insert counter: %v", err)
-		}
+	t.Run("Should FAIL on read committed", testMultiObjectReadSkew(db))
+}
 
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			writeDone := make(chan bool, 1)
-			readDone := make(chan bool, 1)
+func testMultiObjectReadSkew(db *sql.DB) func(*testing.T) {
+	return util.RepeatTest(func(t *testing.T) {
+		_, err := db.Exec(ResetCountersQueryPostgres)
+		util.PanicIfNotNil(err)
 
-			go runAsync(func() { setValues(db, 1) }, writeDone)
+		writeDone := make(chan bool, 1)
+		readDone := make(chan bool, 1)
 
-			go runAsync(func() { assertConsistentCounters(t, db) }, readDone)
-			<-writeDone
+		go runAsync(func() { setValues(db, 1) }, writeDone)
 
-			<-readDone
-		})
-	}
+		go runAsync(func() { assertConsistentCounters(t, db) }, readDone)
+		<-writeDone
+
+		<-readDone
+	})
 }
 
 func TestShouldFindReadSkewOnPostgres_SingleObject(t *testing.T) {
 	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+	util.PanicIfNotNil(err)
+	defer util.CloseOrPanic(db)
 
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
+	util.TruncateCounters(db)
+
+	t.Run("Should FAIL on read committed", util.RepeatTest(func(t *testing.T) {
+		_, err = db.Exec(ResetSingleCounterQueryPostgres)
+		util.PanicIfNotNil(err)
+
+		writeDone := make(chan bool, 1)
+		readDone := make(chan bool, 1)
+
+		go runAsync(func() { setCounter(db, 1) }, writeDone)
+
+		go runAsync(func() { assertConsistentValues(t, db) }, readDone)
+		<-writeDone
+
+		<-readDone
+	}))
 
 	for i := 1; i <= 5000; i++ {
-		_, err = db.Exec(ResetSingleCounterQueryPostgres)
-		if err != nil {
-			t.Fatalf("Failed to insert counter: %v", err)
-		}
 
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			writeDone := make(chan bool, 1)
-			readDone := make(chan bool, 1)
-
-			go runAsync(func() { setCounter(db, 1) }, writeDone)
-
-			go runAsync(func() { assertConsistentValues(t, db) }, readDone)
-			<-writeDone
-
-			<-readDone
-		})
 	}
 }
 
