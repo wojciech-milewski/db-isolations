@@ -20,7 +20,7 @@ func TestWriteSkew(t *testing.T) {
 	t.Run("Should PASS on read committed with locking", testWriteSkewWithLocks(db, sql.LevelReadCommitted))
 	t.Run("Should FAIL on repeatable read", testWriteSkewWithNaiveQuery(db, sql.LevelRepeatableRead))
 	t.Run("Should FAIL on repeatable read with locking", testWriteSkewWithLocks(db, sql.LevelRepeatableRead))
-	t.Run("Should PANIC on repeatable read", testWriteSkewWithNaiveQuery(db, sql.LevelSerializable))
+	t.Run("Should PANIC on serializable", testWriteSkewWithNaiveQuery(db, sql.LevelSerializable))
 	t.Run("Should PANIC on serializable with locking", testWriteSkewWithLocks(db, sql.LevelSerializable))
 }
 
