@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const testCount = 1000
+const testCount = 5000
 
 func RepeatTest(testFunc func(*testing.T)) func(*testing.T) {
 	return func(t *testing.T) {

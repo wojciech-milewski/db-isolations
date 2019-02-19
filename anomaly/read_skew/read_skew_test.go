@@ -3,6 +3,7 @@ package dirty_write
 import (
 	"database/sql"
 	"db-isolations/util"
+	"db-isolations/util/db/statement"
 	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
@@ -24,10 +25,12 @@ func TestShouldFindReadSkewOnPostgres_MultiObject(t *testing.T) {
 
 	util.TruncateCounters(db)
 
-	t.Run("Should FAIL on read committed", testMultiObjectReadSkew(db))
+	t.Run("Should FAIL on read committed", testMultiObjectReadSkew(db, statement.ReadCommitted))
+	t.Run("Should PASS on repeatable read", testMultiObjectReadSkew(db, statement.RepeatableRead))
+	t.Run("Should PASS on serializable", testMultiObjectReadSkew(db, statement.Serializable))
 }
 
-func testMultiObjectReadSkew(db *sql.DB) func(*testing.T) {
+func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
 	return util.RepeatTest(func(t *testing.T) {
 		_, err := db.Exec(ResetCountersQueryPostgres)
 		util.PanicIfNotNil(err)
@@ -35,9 +38,9 @@ func testMultiObjectReadSkew(db *sql.DB) func(*testing.T) {
 		writeDone := make(chan bool, 1)
 		readDone := make(chan bool, 1)
 
-		go runAsync(func() { setValues(db, 1) }, writeDone)
+		go runAsync(func() { setValues(db, 1, setIsolationLevelStatement) }, writeDone)
 
-		go runAsync(func() { assertConsistentCounters(t, db) }, readDone)
+		go runAsync(func() { assertConsistentCounters(t, db, setIsolationLevelStatement) }, readDone)
 		<-writeDone
 
 		<-readDone
@@ -71,14 +74,14 @@ func TestShouldFindReadSkewOnPostgres_SingleObject(t *testing.T) {
 	}
 }
 
-func setValues(db *sql.DB, value int) {
+func setValues(db *sql.DB, value int, setIsolationLevelStatement string) {
 	_, err := db.Exec(fmt.Sprintf(`
-			SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+			%s;
 			BEGIN;
 			UPDATE counters SET counter=%d WHERE name='first'; 
 			UPDATE counters SET counter=%d WHERE name='second'; 
 			COMMIT;
-			`, value, value))
+			`, setIsolationLevelStatement, value, value))
 
 	if err != nil {
 		panic(err)
@@ -98,8 +101,8 @@ func setCounter(db *sql.DB, value int) {
 	}
 }
 
-func assertConsistentCounters(t *testing.T, db *sql.DB) {
-	firstCounter, secondCounter := readCounters(db)
+func assertConsistentCounters(t *testing.T, db *sql.DB, setIsolationLevelStatement string) {
+	firstCounter, secondCounter := readCounters(db, setIsolationLevelStatement)
 
 	assert.True(
 		t,
@@ -109,14 +112,13 @@ func assertConsistentCounters(t *testing.T, db *sql.DB) {
 }
 
 //noinspection SqlNoDataSourceInspection,SqlResolve
-func readCounters(db *sql.DB) (int, int) {
-	rows, err := db.Query(`
-			SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+func readCounters(db *sql.DB, setIsolationLevelStatement string) (int, int) {
+	rows, err := db.Query(fmt.Sprintf(`
+			%s;
 			BEGIN;
 			SELECT counter FROM counters WHERE name='first';
 			SELECT counter FROM counters WHERE name='second';
-			COMMIT;
-`)
+			COMMIT;`, setIsolationLevelStatement))
 
 	defer func() {
 		closeErr := rows.Close()
