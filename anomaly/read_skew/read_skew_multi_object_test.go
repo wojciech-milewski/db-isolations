@@ -32,7 +32,7 @@ func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string, isol
 
 		go runAsync(func() { setBothCounters(db, 1, setIsolationLevelStatement, isolationLevel) }, writeDone)
 
-		go runAsync(func() { assertCountersEqual(t, db, setIsolationLevelStatement, isolationLevel) }, readDone)
+		go runAsync(func() { assertCountersEqual(t, db, isolationLevel) }, readDone)
 
 		<-writeDone
 		<-readDone
@@ -51,8 +51,8 @@ func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string, i
 	util.PanicIfNotNil(err)
 }
 
-func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) {
-	firstCounter, secondCounter := readCounters(db, setIsolationLevelStatement, isolationLevel)
+func assertCountersEqual(t *testing.T, db *sql.DB, isolationLevel sql.IsolationLevel) {
+	firstCounter, secondCounter := readCounters(db, isolationLevel)
 
 	assert.True(
 		t,
@@ -62,24 +62,17 @@ func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement st
 }
 
 //noinspection SqlNoDataSourceInspection,SqlResolve
-func readCounters(db *sql.DB, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) (int, int) {
-	rows, err := db.Query(fmt.Sprintf(`
-			%s;
-			BEGIN;
-			SELECT counter FROM counters WHERE name='first';
-			SELECT counter FROM counters WHERE name='second';
-			COMMIT;`, setIsolationLevelStatement))
+func readCounters(db *sql.DB, isolationLevel sql.IsolationLevel) (int, int) {
+	transaction := util.BeginTx(db, isolationLevel)
 
-	defer util.CloseOrPanic(rows)
+	row := transaction.QueryRow("SELECT counter FROM counters WHERE name='first';")
+	firstCounter := util.ScanToInt(row)
 
+	row = transaction.QueryRow("SELECT counter FROM counters WHERE name='second';")
+	secondCounter := util.ScanToInt(row)
+
+	err := transaction.Commit()
 	util.PanicIfNotNil(err)
 
-	firstCounter := scanCounter(rows)
-
-	if !rows.NextResultSet() {
-		panic("expected next result set")
-	}
-
-	secondCounter := scanCounter(rows)
 	return firstCounter, secondCounter
 }
