@@ -32,7 +32,7 @@ func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string, isol
 
 		go runAsync(func() { setBothCounters(db, 1, setIsolationLevelStatement, isolationLevel) }, writeDone)
 
-		go runAsync(func() { assertCountersEqual(t, db, setIsolationLevelStatement) }, readDone)
+		go runAsync(func() { assertCountersEqual(t, db, setIsolationLevelStatement, isolationLevel) }, readDone)
 
 		<-writeDone
 		<-readDone
@@ -51,7 +51,7 @@ func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string, i
 	util.PanicIfNotNil(err)
 }
 
-func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement string) {
+func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) {
 	firstCounter, secondCounter := readCounters(db, setIsolationLevelStatement)
 
 	assert.True(
