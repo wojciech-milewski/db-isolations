@@ -52,7 +52,7 @@ func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string, i
 }
 
 func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) {
-	firstCounter, secondCounter := readCounters(db, setIsolationLevelStatement)
+	firstCounter, secondCounter := readCounters(db, setIsolationLevelStatement, isolationLevel)
 
 	assert.True(
 		t,
@@ -62,7 +62,7 @@ func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement st
 }
 
 //noinspection SqlNoDataSourceInspection,SqlResolve
-func readCounters(db *sql.DB, setIsolationLevelStatement string) (int, int) {
+func readCounters(db *sql.DB, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) (int, int) {
 	rows, err := db.Query(fmt.Sprintf(`
 			%s;
 			BEGIN;
