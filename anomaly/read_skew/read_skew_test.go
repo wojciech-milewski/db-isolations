@@ -2,6 +2,7 @@ package dirty_write
 
 import (
 	"database/sql"
+	"db-isolations/postgres"
 	"db-isolations/util"
 	"db-isolations/util/db/statement"
 	"errors"
@@ -12,15 +13,14 @@ import (
 	"testing"
 )
 
-//noinspection SqlNoDataSourceInspection,SqlResolve
 const (
-	ResetCountersQueryPostgres      = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0) ON CONFLICT (name) DO UPDATE SET counter=0;"
-	ResetSingleCounterQueryPostgres = "INSERT INTO counters (name, counter) VALUES ('first', 0) ON CONFLICT (name) DO UPDATE SET counter=0;"
+	ResetCountersQueryPostgres = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0) ON CONFLICT (name) DO UPDATE SET counter=0;"
 )
 
 func TestShouldFindReadSkewOnPostgres_MultiObject(t *testing.T) {
-	db, err := OpenPostgres()
+	db, err := postgres.Open()
 	util.PanicIfNotNil(err)
+
 	defer util.CloseOrPanic(db)
 
 	util.TruncateCounters(db)
@@ -32,31 +32,30 @@ func TestShouldFindReadSkewOnPostgres_MultiObject(t *testing.T) {
 
 func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
 	return util.RepeatTest(func(t *testing.T) {
-		_, err := db.Exec(ResetCountersQueryPostgres)
-		util.PanicIfNotNil(err)
+		resetCounters(db)
 
 		writeDone := make(chan bool, 1)
 		readDone := make(chan bool, 1)
 
-		go runAsync(func() { setValues(db, 1, setIsolationLevelStatement) }, writeDone)
+		go runAsync(func() { setBothCounters(db, 1, setIsolationLevelStatement) }, writeDone)
 
-		go runAsync(func() { assertConsistentCounters(t, db, setIsolationLevelStatement) }, readDone)
+		go runAsync(func() { assertCountersEqual(t, db, setIsolationLevelStatement) }, readDone)
+
 		<-writeDone
-
 		<-readDone
 	})
 }
 
 func TestShouldFindReadSkewOnPostgres_SingleObject(t *testing.T) {
-	db, err := OpenPostgres()
+	db, err := postgres.Open()
 	util.PanicIfNotNil(err)
+
 	defer util.CloseOrPanic(db)
 
 	util.TruncateCounters(db)
 
 	t.Run("Should FAIL on read committed", util.RepeatTest(func(t *testing.T) {
-		_, err = db.Exec(ResetSingleCounterQueryPostgres)
-		util.PanicIfNotNil(err)
+		resetCounters(db)
 
 		writeDone := make(chan bool, 1)
 		readDone := make(chan bool, 1)
@@ -74,7 +73,12 @@ func TestShouldFindReadSkewOnPostgres_SingleObject(t *testing.T) {
 	}
 }
 
-func setValues(db *sql.DB, value int, setIsolationLevelStatement string) {
+func resetCounters(db *sql.DB) {
+	_, err := db.Exec(ResetCountersQueryPostgres)
+	util.PanicIfNotNil(err)
+}
+
+func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string) {
 	_, err := db.Exec(fmt.Sprintf(`
 			%s;
 			BEGIN;
@@ -88,20 +92,7 @@ func setValues(db *sql.DB, value int, setIsolationLevelStatement string) {
 	}
 }
 
-func setCounter(db *sql.DB, value int) {
-	_, err := db.Exec(fmt.Sprintf(`
-			SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
-			BEGIN;
-			UPDATE counters SET counter=%d WHERE name='first'; 
-			COMMIT;
-			`, value))
-
-	if err != nil {
-		panic(err)
-	}
-}
-
-func assertConsistentCounters(t *testing.T, db *sql.DB, setIsolationLevelStatement string) {
+func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement string) {
 	firstCounter, secondCounter := readCounters(db, setIsolationLevelStatement)
 
 	assert.True(
@@ -141,6 +132,19 @@ func readCounters(db *sql.DB, setIsolationLevelStatement string) (int, int) {
 	return firstCounter, secondCounter
 }
 
+func setCounter(db *sql.DB, value int) {
+	_, err := db.Exec(fmt.Sprintf(`
+			SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+			BEGIN;
+			UPDATE counters SET counter=%d WHERE name='first'; 
+			COMMIT;
+			`, value))
+
+	if err != nil {
+		panic(err)
+	}
+}
+
 func assertConsistentValues(t *testing.T, db *sql.DB) {
 	firstValue, secondValue := readCounter(db)
 
@@ -155,22 +159,14 @@ func assertConsistentValues(t *testing.T, db *sql.DB) {
 func readCounter(db *sql.DB) (int, int) {
 	rows, err := db.Query(`
 			SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
-BEGIN;
+			BEGIN;
 			SELECT counter FROM counters WHERE name='first';
 			SELECT counter FROM counters WHERE name='first';
-COMMIT;
+			COMMIT;
 `)
+	defer util.CloseOrPanic(rows)
 
-	defer func() {
-		closeErr := rows.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
-
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 
 	firstCounter := scanCounter(rows)
 
@@ -189,24 +185,13 @@ func scanCounter(rows *sql.Rows) int {
 
 	var counter int
 	err := rows.Scan(&counter)
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 
 	if rows.Next() {
 		panic(errors.New("expected only one row"))
 	}
 
 	return counter
-}
-
-const (
-	postgresDSN        = "postgres://root:root@localhost:5432/anomaly_test?sslmode=disable"
-	postgresDriverName = "postgres"
-)
-
-func OpenPostgres() (*sql.DB, error) {
-	return sql.Open(postgresDriverName, postgresDSN)
 }
 
 func runAsync(f func(), done chan bool) {
