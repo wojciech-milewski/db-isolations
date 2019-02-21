@@ -18,19 +18,19 @@ func TestShouldFindReadSkewOnPostgres_MultiObject(t *testing.T) {
 
 	util.TruncateCounters(db)
 
-	t.Run("Should FAIL on read committed", testMultiObjectReadSkew(db, statement.ReadCommitted))
-	t.Run("Should PASS on repeatable read", testMultiObjectReadSkew(db, statement.RepeatableRead))
-	t.Run("Should PASS on serializable", testMultiObjectReadSkew(db, statement.Serializable))
+	t.Run("Should FAIL on read committed", testMultiObjectReadSkew(db, statement.ReadCommitted, sql.LevelReadCommitted))
+	t.Run("Should PASS on repeatable read", testMultiObjectReadSkew(db, statement.RepeatableRead, sql.LevelRepeatableRead))
+	t.Run("Should PASS on serializable", testMultiObjectReadSkew(db, statement.Serializable, sql.LevelSerializable))
 }
 
-func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string) func(*testing.T) {
+func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) func(*testing.T) {
 	return util.RepeatTest(func(t *testing.T) {
 		resetCounters(db)
 
 		writeDone := make(chan bool, 1)
 		readDone := make(chan bool, 1)
 
-		go runAsync(func() { setBothCounters(db, 1, setIsolationLevelStatement) }, writeDone)
+		go runAsync(func() { setBothCounters(db, 1, setIsolationLevelStatement, isolationLevel) }, writeDone)
 
 		go runAsync(func() { assertCountersEqual(t, db, setIsolationLevelStatement) }, readDone)
 
@@ -39,7 +39,7 @@ func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string) func
 	})
 }
 
-func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string) {
+func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string, isolationLevel sql.IsolationLevel) {
 	_, err := db.Exec(fmt.Sprintf(`
 			%s;
 			BEGIN;
