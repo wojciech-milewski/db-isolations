@@ -46,38 +46,6 @@ func testMultiObjectReadSkew(db *sql.DB, setIsolationLevelStatement string) func
 	})
 }
 
-func TestShouldFindReadSkewOnPostgres_SingleObject(t *testing.T) {
-	db, err := postgres.Open()
-	util.PanicIfNotNil(err)
-
-	defer util.CloseOrPanic(db)
-
-	util.TruncateCounters(db)
-
-	t.Run("Should FAIL on read committed", util.RepeatTest(func(t *testing.T) {
-		resetCounters(db)
-
-		writeDone := make(chan bool, 1)
-		readDone := make(chan bool, 1)
-
-		go runAsync(func() { setCounter(db, 1) }, writeDone)
-
-		go runAsync(func() { assertConsistentValues(t, db) }, readDone)
-		<-writeDone
-
-		<-readDone
-	}))
-
-	for i := 1; i <= 5000; i++ {
-
-	}
-}
-
-func resetCounters(db *sql.DB) {
-	_, err := db.Exec(ResetCountersQueryPostgres)
-	util.PanicIfNotNil(err)
-}
-
 func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string) {
 	_, err := db.Exec(fmt.Sprintf(`
 			%s;
@@ -87,9 +55,7 @@ func setBothCounters(db *sql.DB, value int, setIsolationLevelStatement string) {
 			COMMIT;
 			`, setIsolationLevelStatement, value, value))
 
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 }
 
 func assertCountersEqual(t *testing.T, db *sql.DB, setIsolationLevelStatement string) {
@@ -111,16 +77,9 @@ func readCounters(db *sql.DB, setIsolationLevelStatement string) (int, int) {
 			SELECT counter FROM counters WHERE name='second';
 			COMMIT;`, setIsolationLevelStatement))
 
-	defer func() {
-		closeErr := rows.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+	defer util.CloseOrPanic(rows)
 
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 
 	firstCounter := scanCounter(rows)
 
@@ -130,6 +89,34 @@ func readCounters(db *sql.DB, setIsolationLevelStatement string) (int, int) {
 
 	secondCounter := scanCounter(rows)
 	return firstCounter, secondCounter
+}
+
+func TestShouldFindReadSkewOnPostgres_SingleObject(t *testing.T) {
+	db, err := postgres.Open()
+	util.PanicIfNotNil(err)
+
+	defer util.CloseOrPanic(db)
+
+	util.TruncateCounters(db)
+
+	t.Run("Should FAIL on read committed", util.RepeatTest(func(t *testing.T) {
+		resetCounters(db)
+
+		writeDone := make(chan bool, 1)
+		readDone := make(chan bool, 1)
+
+		go runAsync(func() { setCounter(db, 1) }, writeDone)
+
+		go runAsync(func() { assertConsistentValues(t, db) }, readDone)
+		<-writeDone
+
+		<-readDone
+	}))
+}
+
+func resetCounters(db *sql.DB) {
+	_, err := db.Exec(ResetCountersQueryPostgres)
+	util.PanicIfNotNil(err)
 }
 
 func setCounter(db *sql.DB, value int) {
