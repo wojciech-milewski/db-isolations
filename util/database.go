@@ -10,6 +10,13 @@ func TruncateCounters(db *sql.DB) {
 	PanicIfNotNil(err)
 }
 
+func ResetCounters(db *sql.DB) {
+	TruncateCounters(db)
+
+	_, err := db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0);")
+	PanicIfNotNil(err)
+}
+
 func BeginTx(db *sql.DB, isolationLevel sql.IsolationLevel) *sql.Tx {
 	transaction, err := db.BeginTx(
 		context.Background(),

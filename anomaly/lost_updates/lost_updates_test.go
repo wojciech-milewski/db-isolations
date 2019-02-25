@@ -1,281 +1,106 @@
 package lost_updates
 
 import (
-	"context"
 	"database/sql"
+	"db-isolations/postgres"
+	"db-isolations/util"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
-	"strconv"
 	"testing"
 )
 
-const (
-	ResetCountersQueryPostgres = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0) ON CONFLICT (name) DO UPDATE SET counter=0;"
-)
-
 func TestShouldFindLostUpdatesOnPostgres(t *testing.T) {
-	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+	db, err := postgres.Open()
+	util.PanicIfNotNil(err)
 
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
+	defer util.CloseOrPanic(db)
 
-	for i := 1; i <= 1000; i++ {
-		_, err = db.Exec(ResetCountersQueryPostgres)
-		if err != nil {
-			t.Fatalf("Failed to insert counter: %v", err)
-		}
-
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			firstIncrementDone := make(chan bool, 1)
-			secondIncrementDone := make(chan bool, 1)
-
-			go runAsync(func() { incrementCounterByOne(db) }, firstIncrementDone)
-
-			go runAsync(func() { incrementCounterByOne(db) }, secondIncrementDone)
-
-			<-firstIncrementDone
-			<-secondIncrementDone
-
-			assertIncrementedByTwo(t, db)
-		})
-	}
+	t.Run("Should FAIL on dummy increment", testLostUpdates(db, incrementCounterByOne))
+	t.Run("Should PASS on increment with atomic update", testLostUpdates(db, incrementCounterByOneWithAtomicUpdate))
+	t.Run("Should PASS on select for update", testLostUpdates(db, incrementCounterByOneWithSelectForUpdate))
+	t.Run("Should PASS on compare and set", testLostUpdates(db, incrementCounterByOneWithCompareAndSet))
 }
 
-func TestShouldPreventLostUpdatesOnPostgresWithAtomicUpdate(t *testing.T) {
-	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
+func testLostUpdates(db *sql.DB, incrementCounterFunc func(db *sql.DB)) func(t *testing.T) {
+	return util.RepeatTest(func(t *testing.T) {
+		util.ResetCounters(db)
 
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
+		firstIncrementDone := make(chan bool, 1)
+		secondIncrementDone := make(chan bool, 1)
 
-	for i := 1; i <= 1000; i++ {
-		_, err = db.Exec(ResetCountersQueryPostgres)
-		if err != nil {
-			t.Fatalf("Failed to insert counter: %v", err)
-		}
+		go runAsync(func() { incrementCounterFunc(db) }, firstIncrementDone)
 
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			firstIncrementDone := make(chan bool, 1)
-			secondIncrementDone := make(chan bool, 1)
+		go runAsync(func() { incrementCounterFunc(db) }, secondIncrementDone)
 
-			go runAsync(func() { incrementCounterByOneWithAtomicUpdate(db) }, firstIncrementDone)
+		<-firstIncrementDone
+		<-secondIncrementDone
 
-			go runAsync(func() { incrementCounterByOneWithAtomicUpdate(db) }, secondIncrementDone)
-
-			<-firstIncrementDone
-			<-secondIncrementDone
-
-			assertIncrementedByTwo(t, db)
-		})
-	}
-}
-
-func TestShouldPreventLostUpdatesOnPostgresWithSelectForUpdate(t *testing.T) {
-	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
-
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
-
-	for i := 1; i <= 1000; i++ {
-		_, err = db.Exec(ResetCountersQueryPostgres)
-		if err != nil {
-			t.Fatalf("Failed to insert counter: %v", err)
-		}
-
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			firstIncrementDone := make(chan bool, 1)
-			secondIncrementDone := make(chan bool, 1)
-
-			go runAsync(func() { incrementCounterByOneWithSelectForUpdate(db) }, firstIncrementDone)
-
-			go runAsync(func() { incrementCounterByOneWithSelectForUpdate(db) }, secondIncrementDone)
-
-			<-firstIncrementDone
-			<-secondIncrementDone
-
-			assertIncrementedByTwo(t, db)
-		})
-	}
-}
-
-func TestShouldPreventLostUpdatesOnPostgresWithCompareAndSet(t *testing.T) {
-	db, err := OpenPostgres()
-	if err != nil {
-		t.Fatalf("Failed to open db: %v", err)
-	}
-	defer func() {
-		closeErr := db.Close()
-		if closeErr != nil {
-			panic(closeErr)
-		}
-	}()
-
-	_, err = db.Exec("TRUNCATE counters")
-	if err != nil {
-		t.Fatalf("Failed to truncate: %v", err)
-	}
-
-	for i := 1; i <= 1000; i++ {
-		_, err = db.Exec(ResetCountersQueryPostgres)
-		if err != nil {
-			t.Fatalf("Failed to insert counter: %v", err)
-		}
-
-		t.Run(strconv.Itoa(i), func(t *testing.T) {
-			firstIncrementDone := make(chan bool, 1)
-			secondIncrementDone := make(chan bool, 1)
-
-			go runAsync(func() { incrementCounterByOneWithCompareAndSet(db) }, firstIncrementDone)
-
-			go runAsync(func() { incrementCounterByOneWithCompareAndSet(db) }, secondIncrementDone)
-
-			<-firstIncrementDone
-			<-secondIncrementDone
-
-			assertIncrementedByTwo(t, db)
-		})
-	}
+		assertIncrementedByTwo(t, db)
+	})
 }
 
 func incrementCounterByOne(db *sql.DB) {
-	transaction, err := db.BeginTx(
-		context.Background(),
-		&sql.TxOptions{Isolation: sql.LevelReadCommitted},
-	)
-	if err != nil {
-		panic(err)
-	}
-	var counter int
-	err = transaction.QueryRow("SELECT counter FROM counters WHERE name='first';").Scan(&counter)
+	transaction := util.BeginTx(db, sql.LevelReadCommitted)
 
-	if err != nil {
-		panic(err)
-	}
+	counter := util.ScanToInt(transaction.QueryRow("SELECT counter FROM counters WHERE name='first';"))
 
 	counter = counter + 1
 
-	_, err = transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first';", counter)
-	if err != nil {
-		panic(err)
-	}
+	_, err := transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first';", counter)
+	util.PanicIfNotNil(err)
 
 	err = transaction.Commit()
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 }
 
 //noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
 func incrementCounterByOneWithAtomicUpdate(db *sql.DB) {
-	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		panic(err)
-	}
+	transaction := util.BeginTx(db, sql.LevelReadCommitted)
 
-	_, err = transaction.Exec("UPDATE counters SET counter = counter + 1 WHERE name='first';")
-	if err != nil {
-		panic(err)
-	}
+	_, err := transaction.Exec("UPDATE counters SET counter = counter + 1 WHERE name='first';")
+	util.PanicIfNotNil(err)
 
 	err = transaction.Commit()
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 }
 
 func incrementCounterByOneWithSelectForUpdate(db *sql.DB) {
-	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		panic(err)
-	}
-	var counter int
-	err = transaction.QueryRow("SELECT counter FROM counters WHERE name='first' FOR UPDATE;").Scan(&counter)
+	transaction := util.BeginTx(db, sql.LevelReadCommitted)
 
-	if err != nil {
-		panic(err)
-	}
+	counter := util.ScanToInt(transaction.QueryRow("SELECT counter FROM counters WHERE name='first' FOR UPDATE;"))
 
 	counter = counter + 1
 
-	_, err = transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first';", counter)
-	if err != nil {
-		panic(err)
-	}
+	_, err := transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first';", counter)
+	util.PanicIfNotNil(err)
 
 	err = transaction.Commit()
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 }
 
 //noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
 func incrementCounterByOneWithCompareAndSet(db *sql.DB) {
-	transaction, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
-	if err != nil {
-		panic(err)
-	}
-	var counter int
-	err = transaction.QueryRow("SELECT counter FROM counters WHERE name='first';").Scan(&counter)
+	transaction := util.BeginTx(db, sql.LevelReadCommitted)
 
-	if err != nil {
-		panic(err)
-	}
+	counter := util.ScanToInt(transaction.QueryRow("SELECT counter FROM counters WHERE name='first';"))
 
 	newCounter := counter + 1
 
 	updateResult, err := transaction.Exec("UPDATE counters SET counter=$1 WHERE name='first' AND counter=$2;", newCounter, counter)
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
+
 	rowsAffected, err := updateResult.RowsAffected()
-	if err != nil {
-		panic(err)
-	}
+	util.PanicIfNotNil(err)
 
 	if rowsAffected == 0 {
 		err := transaction.Rollback()
-		if err != nil {
-			panic(err)
-		}
+		util.PanicIfNotNil(err)
+
 		incrementCounterByOneWithCompareAndSet(db)
 	} else {
 		err = transaction.Commit()
-		if err != nil {
-			panic(err)
-		}
+		util.PanicIfNotNil(err)
 	}
 }
 
@@ -287,26 +112,9 @@ func assertIncrementedByTwo(t *testing.T, db *sql.DB) {
 
 //noinspection SqlNoDataSourceInspection,SqlResolve,SqlDialectInspection
 func readCounter(db *sql.DB) int {
-	var counter int
-
-	err := db.QueryRow(`
-			SELECT counter FROM counters WHERE name='first';
-`).Scan(&counter)
-
-	if err != nil {
-		panic(err)
-	}
-
-	return counter
-}
-
-const (
-	postgresDSN        = "postgres://root:root@localhost:5432/anomaly_test?sslmode=disable"
-	postgresDriverName = "postgres"
-)
-
-func OpenPostgres() (*sql.DB, error) {
-	return sql.Open(postgresDriverName, postgresDSN)
+	return util.ScanToInt(db.QueryRow(`
+				SELECT counter FROM counters WHERE name='first';
+	`))
 }
 
 func runAsync(f func(), done chan bool) {
