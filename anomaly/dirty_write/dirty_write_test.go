@@ -11,10 +11,6 @@ import (
 	"testing"
 )
 
-const (
-	InsertCountersSQL = "INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0);"
-)
-
 func TestDirtyWriteOnMysql(t *testing.T) {
 	db, err := mysql.Open()
 	util.PanicIfNotNil(err)
@@ -60,7 +56,7 @@ func testDirtyWriteWithIsolationLevel(db *sql.DB, setIsolationLevelStatement str
 func resetCounters(db *sql.DB) {
 	util.TruncateCounters(db)
 
-	_, err := db.Exec(InsertCountersSQL)
+	_, err := db.Exec("INSERT INTO counters (name, counter) VALUES ('first', 0), ('second', 0);")
 	util.PanicIfNotNil(err)
 }
 
@@ -68,9 +64,10 @@ func setValues(db *sql.DB, value int, setIsolationLevelStatement string) {
 	updateSQL := fmt.Sprintf(`
 			%s;
 			BEGIN;
-			UPDATE counters SET counter=%d; 
+			UPDATE counters SET counter=%d WHERE name='first'; 
+			UPDATE counters SET counter=%d WHERE name='second'; 
 			COMMIT;
-			`, setIsolationLevelStatement, value)
+			`, setIsolationLevelStatement, value, value)
 	_, err := db.Exec(updateSQL)
 	util.PanicIfNotNil(err)
 }
